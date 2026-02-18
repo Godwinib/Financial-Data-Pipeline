@@ -1,0 +1,51 @@
+name: Dependency Updates
+
+on:
+  schedule:
+    - cron: '0 0 * * 0'  # Weekly on Sundays
+  workflow_dispatch:      # Manual trigger
+
+jobs:
+  update-dependencies:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Update Python dependencies
+      run: |
+        pip install pip-tools
+        pip-compile --upgrade producer/requirements.in
+        pip-compile --upgrade consumer/requirements.in
+    
+    - name: Create Pull Request
+      uses: peter-evans/create-pull-request@v5
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        commit-message: 'chore(deps): update Python dependencies'
+        title: 'Weekly dependency update'
+        body: |
+          Automated dependency updates:
+          - Python packages updated to latest compatible versions
+          - Security patches applied
+          - Tested with CI pipeline
+        branch: chore/deps-update
+        base: develop
+        labels: dependencies, automated-pr
+    
+    - name: Check Docker base images
+      run: |
+        docker pull confluentinc/cp-kafka:latest
+        docker pull bitnami/spark:latest
+        docker pull postgres:latest
+        docker pull prom/prometheus:latest
+    
+    - name: Update Docker tags
+      run: |
+        sed -i 's/confluentinc\/cp-kafka:.*/confluentinc\/cp-kafka:latest/' docker-compose.yml
+        sed -i 's/bitnami\/spark:.*/bitnami\/spark:latest/' docker-compose.yml

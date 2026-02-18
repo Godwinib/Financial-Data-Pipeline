@@ -1,0 +1,53 @@
+name: Security Scan
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    - cron: '0 0 * * *'  # Daily
+
+jobs:
+  secret-scanning:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Run TruffleHog
+      uses: trufflesecurity/trufflehog@main
+      with:
+        extra_args: --only-verified
+    
+    - name: Run Gitleaks
+      uses: zricethezav/gitleaks-action@v2
+    
+    - name: Check for exposed secrets
+      run: |
+        grep -r "password\|secret\|key\|token" --include="*.{py,yml,yaml,sh,env}" --exclude-dir={.git,node_modules,venv} . || true
+
+  vulnerability-scan:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Run Grype scanner
+      uses: anchore/scan-action@v3
+      with:
+        path: "."
+        fail-build: false
+        severity-cutoff: critical
+    
+    - name: Upload scan results
+      uses: github/codeql-action/upload-sarif@v2
+      with:
+        sarif_file: results.sarif
+    
+    - name: Check Docker images
+      run: |
+        docker pull confluentinc/cp-kafka:7.4.10
+        docker scan confluentinc/cp-kafka:7.4.10 || true
+        docker pull bitnami/spark:3.5.1
+        docker scan bitnami/spark:3.5.1 || true

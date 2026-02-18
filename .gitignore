@@ -1,0 +1,202 @@
+# Environment variables
+.env
+.env.local
+.env.production
+.env.development
+.env.test
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+pythonenv*
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.coverage.*
+*.cover
+*.log
+logs/
+producer/logs/
+consumer/logs/
+
+
+# Spark
+spark_data/
+spark_ivy/
+spark_checkpoints/
+checkpoints/
+checkpoint/
+spark-warehouse/
+metastore_db/
+derby.log
+*.checkpoint
+*.crc
+*.sda
+*.pb
+
+# Kafka
+kafka_data/
+kafka-logs/
+data/kafka/
+/tmp/kafka-logs/
+/tmp/zookeeper/
+
+# PostgreSQL
+postgres_data/
+pgdata/
+*.sqlite
+*.db
+postgresql.conf
+pg_hba.conf
+
+# Docker
+.dockerignore
+docker-compose.override.yml
+docker-compose.prod.yml
+Dockerfile.prod
+*.dockerfile
+docker-data/
+docker-volumes/
+docker/volumes/
+
+# Monitoring
+prometheus_data/
+grafana_data/
+grafana/provisioning/
+monitoring/alertmanager/
+*.db-wal
+*.db-shm
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+*.sublime-*
+.workspace
+*.code-workspace
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+*.bak
+*.tmp
+*.temp
+
+# Logs
+*.log
+*.out
+logs/
+*.pid
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Secrets
+secrets/
+secrets.yaml
+secrets.yml
+*.pem
+*.key
+*.crt
+*.keystore
+*.jks
+*.truststore
+*.p12
+secrets.tar.gz
+credentials.json
+
+# Test reports
+test-reports/
+test-results/
+allure-results/
+junit/
+*.tap
+*.xml
+coverage/
+
+# Misc
+*.pid
+*.seed
+*.pid.lock
+*.class
+*.jar
+*.war
+*.nar
+*.ear
+*.zip
+*.tar.gz
+*.rar
+*.7z
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Spark dependency cache
+.ivy2/
+.cache/
+ivy_cache/
+
+# Python tools
+pip-log.txt
+pip-delete-this-directory.txt
+.python-version
+.hypothesis/
+profile_default/
+ipython_config.py
+
+
+# Large files
+*.psd
+*.ai
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.wmv
+*.flv
+*.webm
+*.ogg
+*.mp3
+*.wav
+*.flac
+
+# Terraform (if using)
+*.tfstate
+*.tfstate.*
+.terraform/
+terraform.tfvars
+
+# Ansible
+*.retry
+ansible/inventory/production/
+ansible/vault-password-file
+
+# Kubernetes
+*.kubeconfig
+helm/charts/*.tgz
+values.prod.yaml
+values.staging.yaml

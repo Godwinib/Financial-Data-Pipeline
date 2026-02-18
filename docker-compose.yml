@@ -1,0 +1,300 @@
+services:
+  # -------------------- KAFKA SERVICE (KRaft Mode) --------------------
+  kafka:
+    image: confluentinc/cp-kafka:7.4.10
+    container_name: kafka
+    hostname: kafka
+    ports:
+      - "9092:9092"
+      - "9094:9094"
+    environment:
+      KAFKA_PROCESS_ROLES: controller,broker
+      KAFKA_NODE_ID: 1
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+      KAFKA_LISTENERS: PLAINTEXT_INTERNAL://0.0.0.0:9092,PLAINTEXT_EXTERNAL://0.0.0.0:9094,CONTROLLER://0.0.0.0:9093
+
+      # Listeners – ensure external uses localhost for host access
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT_INTERNAL://kafka:9092,PLAINTEXT_EXTERNAL://kafka:9094
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT_INTERNAL:PLAINTEXT,PLAINTEXT_EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT_INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+
+      # Logs
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+
+      # Cluster ID – REQUIRED for KRaft mode. Here's a valid test ID
+      CLUSTER_ID: "N2IcLXkwRPiUex7r29FTlg"
+
+      # Topic settings
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+      KAFKA_COMPRESSION_TYPE: snappy
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    networks:
+      - stock_data
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server kafka:9092 --list || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # -------------------- KAFKA UI --------------------
+  kafka-ui:
+    image: provectuslabs/kafka-ui:v0.7.2
+    container_name: kafka-ui
+    ports:
+      - "8085:8080"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_CLUSTERS_0_NAME: stock_data
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      KAFKA_CLUSTERS_0_METRICS_PORT: 9092
+      DYNAMIC_CONFIG_ENABLED: "true"
+    networks:
+      - stock_data
+
+  # -------------------- POSTGRESQL --------------------
+  postgres:
+    image: postgres:15
+    container_name: postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-stockdb}
+      POSTGRES_USER: ${POSTGRES_USER:-stockuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-stockpass}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - stock_data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-stockuser} -d ${POSTGRES_DB:-stockdb}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # -------------------- POSTGRES EXPORTER --------------------
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.15.0
+    container_name: postgres-exporter
+    environment:
+      DATA_SOURCE_NAME: "postgresql://${POSTGRES_USER:-stockuser}:${POSTGRES_PASSWORD:-stockpass}@postgres:5432/${POSTGRES_DB:-stockdb}?sslmode=disable"
+      PG_EXPORTER_AUTO_DISCOVER_DATABASES: "true"
+    ports:
+      - "9187:9187"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - stock_data
+
+  # -------------------- PGADMIN --------------------
+  pgadmin:
+    image: dpage/pgadmin4:8
+    container_name: pgadmin
+    ports:
+      - "5050:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@local.com}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - stock_data
+
+  # -------------------- SPARK MASTER --------------------
+  spark-master:
+    image: spark:3.5.3
+    container_name: spark-master
+    hostname: spark-master
+    ports:
+      - "8081:8080"
+      - "7077:7077"
+    command:
+      - /opt/spark/bin/spark-class
+      - org.apache.spark.deploy.master.Master
+      - --host
+      - spark-master
+      - --port
+      - "7077"
+      - --webui-port
+      - "8080"
+    environment:
+      - SPARK_DIST_CLASSPATH=/opt/spark/jars/*
+    volumes:
+      - spark_data:/opt/spark/data
+      - ./consumer:/opt/spark/apps
+      - spark_ivy:/opt/spark/.ivy2
+    networks:
+      - stock_data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # -------------------- SPARK WORKER --------------------
+  spark-worker:
+    image: spark:3.5.3
+    container_name: spark-worker
+    hostname: spark-worker
+    depends_on:
+      - spark-master
+    command:
+      - /opt/spark/bin/spark-class
+      - org.apache.spark.deploy.worker.Worker
+      - spark://spark-master:7077
+      - --webui-port
+      - "8081"
+    environment:
+      - SPARK_WORKER_CORES=2
+      - SPARK_WORKER_MEMORY=2g
+      - SPARK_DIST_CLASSPATH=/opt/spark/jars/*
+    volumes:
+      - spark_data:/opt/spark/data
+      - spark_ivy:/opt/spark/.ivy2
+    networks:
+      - stock_data
+
+  
+      # -------------------- SPARK STREAMING CONSUMER --------------------
+  spark-consumer:
+    build:
+      context: .
+      dockerfile: spark/Dockerfile
+    container_name: spark-consumer
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      spark-master:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      - SPARK_MASTER_URL=spark://spark-master:7077
+      - SPARK_DRIVER_MEMORY=2g
+      - SPARK_DRIVER_CORES=1
+      - PYSPARK_PYTHON=python3
+      - PYSPARK_DRIVER_PYTHON=python3
+    volumes:
+      - ./consumer:/opt/spark/apps
+      - spark_ivy:/opt/spark/.ivy2
+      - spark_checkpoints:/opt/spark/checkpoints
+      - spark_logs:/opt/spark/logs
+    command: >
+      bash -c "echo '=== Starting Spark Structured Streaming Consumer ===' &&
+      /opt/spark/bin/spark-submit
+      --master spark://spark-master:7077
+      --deploy-mode client
+      --driver-memory 2g
+      --executor-memory 2g
+      --executor-cores 1
+      --num-executors 1
+      --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0,org.postgresql:postgresql:42.7.3
+      --conf spark.sql.shuffle.partitions=2
+      --conf spark.streaming.stopGracefullyOnShutdown=true
+      --conf spark.sql.streaming.schemaInference=true
+      --conf spark.sql.adaptive.enabled=true
+      --conf spark.sql.adaptive.coalescePartitions.enabled=true
+      --conf spark.sql.legacy.timeParserPolicy=LEGACY
+      --conf spark.serializer=org.apache.spark.serializer.KryoSerializer
+      --conf spark.sql.streaming.forceDeleteTempCheckpointLocation=true
+      --conf spark.sql.streaming.metricsEnabled=true
+      --conf spark.kafka.consumer.cache.enabled=false
+      --conf spark.jars.ivy=/opt/spark/.ivy2
+      /opt/spark/apps/kafka_to_postgres.py"
+    networks:
+      - stock_data
+    restart: unless-stopped
+
+  # -------------------- PYTHON PRODUCER --------------------
+  producer:
+    build: ./producer
+    container_name: stock-producer
+    depends_on:
+      kafka:
+        condition: service_healthy
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1 
+    env_file:
+      - .env
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - RAPIDAPI_KEY=${RAPIDAPI_KEY}
+      - RAPIDAPI_HOST=${RAPIDAPI_HOST}
+    restart: unless-stopped
+    volumes:
+      - ./producer/logs:/app/logs
+    networks:
+      - stock_data
+
+  # -------------------- PROMETHEUS --------------------
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    networks:
+      - stock_data
+    restart: unless-stopped
+
+  # -------------------- GRAFANA --------------------
+  grafana:
+    image: grafana/grafana:10.3.1
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - stock_data
+    restart: unless-stopped
+
+# -------------------- VOLUMES --------------------
+volumes:
+  kafka_data:
+  postgres_data:
+  pgadmin_data:
+  spark_data:
+  spark_ivy:
+  spark_checkpoints:
+  spark_logs:
+  prometheus_data:
+  grafana_data:
+
+# -------------------- NETWORKS --------------------
+networks:
+  stock_data:
+    driver: bridge

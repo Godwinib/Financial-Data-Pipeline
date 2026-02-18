@@ -1,0 +1,148 @@
+name: Performance Testing
+
+on:
+  schedule:
+    - cron: '0 2 * * 0'  # Weekly on Sundays at 2 AM
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'consumer/**'
+      - 'producer/**'
+      - 'docker-compose.yml'
+
+jobs:
+  kafka-performance-test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+    
+    - name: Install dependencies
+      run: |
+        pip install kafka-python numpy psutil pandas
+        pip install -r producer/requirements.txt
+    
+    - name: Start Kafka
+      run: |
+        docker-compose up -d kafka
+        sleep 30
+    
+    - name: Run Kafka performance test
+      run: |
+        python tests/performance/test_kafka_throughput.py \
+          --brokers localhost:9092 \
+          --messages 50000 \
+          --size 1024 \
+          --duration 30
+    
+    - name: Upload Kafka performance results
+      uses: actions/upload-artifact@v3
+      with:
+        name: kafka-performance-results
+        path: |
+          performance_report.json
+          kafka_*.json
+
+  spark-performance-test:
+    runs-on: ubuntu-latest
+    needs: kafka-performance-test
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        pip install pyspark numpy
+    
+    - name: Start Spark cluster
+      run: |
+        docker-compose up -d spark-master spark-worker
+        sleep 20
+    
+    - name: Run Spark performance test
+      run: |
+        python tests/performance/test_spark_streaming.py
+    
+    - name: Upload Spark performance results
+      uses: actions/upload-artifact@v3
+      with:
+        name: spark-performance-results
+        path: spark_performance_report.json
+
+  postgres-performance-test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        pip install psycopg2-binary numpy
+    
+    - name: Start PostgreSQL
+      run: |
+        docker-compose up -d postgres
+        sleep 15
+        docker-compose exec -T postgres psql -U stockuser -d stockdb -f sql/init.sql
+    
+    - name: Run PostgreSQL performance test
+      run: |
+        python tests/performance/test_postgres_performance.py
+    
+    - name: Upload PostgreSQL performance results
+      uses: actions/upload-artifact@v3
+      with:
+        name: postgres-performance-results
+        path: postgres_performance_report.json
+
+  performance-baseline-check:
+    runs-on: ubuntu-latest
+    needs: [kafka-performance-test, spark-performance-test, postgres-performance-test]
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Download all performance results
+      uses: actions/download-artifact@v3
+    
+    - name: Check performance regressions
+      run: |
+        python tests/performance/check_performance_baseline.py
+    
+    - name: Generate performance report
+      run: |
+        python tests/performance/generate_performance_dashboard.py
+    
+    - name: Upload performance dashboard
+      uses: actions/upload-artifact@v3
+      with:
+        name: performance-dashboard
+        path: performance_dashboard.html
+    
+    - name: Notify on performance regression
+      if: failure()
+      uses: slackapi/slack-github-action@v1.24.0
+      with:
+        channel-id: 'performance-alerts'
+        slack-message: |
+          ⚠️ Performance regression detected!
+          Repository: ${{ github.repository }}
+          Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      env:
+        SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}

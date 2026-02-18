@@ -1,0 +1,203 @@
+name: Financial Data Pipeline CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  DOCKER_REGISTRY: ghcr.io
+  DOCKER_IMAGE_BASE: ${{ github.repository }}
+
+jobs:
+  # Validate code quality and formatting
+  lint-and-format:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.10", "3.11"]
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+        cache: 'pip'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install flake8 black isort mypy pylint bandit safety
+        pip install -r producer/requirements.txt || true
+    
+    - name: Lint with flake8
+      run: |
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+    
+    - name: Check formatting with black
+      run: black . --check --diff
+    
+    - name: Check import sorting with isort
+      run: isort . --check-only --diff
+    
+    - name: Type check with mypy
+      run: mypy . --ignore-missing-imports || true
+    
+    - name: Security check with bandit
+      run: bandit -r . -f json -o bandit-report.json || true
+    
+    - name: Security check with safety
+      run: safety check --full-report || true
+
+  # Run unit and integration tests
+  test:
+    runs-on: ubuntu-latest
+    needs: lint-and-format
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.11"]
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    
+    - name: Install test dependencies
+      run: |
+        pip install pytest pytest-cov pytest-asyncio pytest-mock
+        pip install -r producer/requirements.txt
+    
+    - name: Run unit tests
+      run: |
+        pytest tests/unit/ --cov=./ --cov-report=xml --cov-report=html
+    
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage.xml
+        flags: unittests
+        name: codecov-umbrella
+    
+    - name: Archive test results
+      uses: actions/upload-artifact@v3
+      with:
+        name: test-results-${{ matrix.python-version }}
+        path: |
+          htmlcov/
+          coverage.xml
+          pytest-results.xml
+
+  # Build and test Docker images
+  docker-build:
+    runs-on: ubuntu-latest
+    needs: test
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
+    
+    - name: Build producer image
+      uses: docker/build-push-action@v4
+      with:
+        context: ./producer
+        file: ./producer/Dockerfile
+        push: false
+        load: true
+        tags: financial-pipeline-producer:test
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+    
+    - name: Test producer image
+      run: |
+        docker run --rm financial-pipeline-producer:test python -c "import producer; print('Producer image OK')"
+    
+    - name: Build and test docker-compose
+      run: |
+        docker-compose -f docker-compose.yml config
+        docker-compose -f docker-compose.yml pull
+        docker-compose -f docker-compose.yml build --parallel
+
+  # Integration tests with full stack
+  integration-test:
+    runs-on: ubuntu-latest
+    needs: docker-build
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Create .env file
+      run: |
+        echo "RAPIDAPI_KEY=${{ secrets.RAPIDAPI_KEY }}" > .env
+        echo "RAPIDAPI_HOST=real-time-finance-data.p.rapidapi.com" >> .env
+        echo "STOCK_SYMBOLS=AAPL,MSFT" >> .env
+        echo "POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}" >> .env
+    
+    - name: Start services
+      run: |
+        docker-compose up -d
+        sleep 30
+    
+    - name: Check service health
+      run: |
+        docker-compose ps
+        docker-compose logs --tail=50
+    
+    - name: Test Kafka connectivity
+      run: |
+        docker-compose exec -T kafka kafka-topics --bootstrap-server localhost:9092 --list
+    
+    - name: Test PostgreSQL
+      run: |
+        docker-compose exec -T postgres pg_isready -U stockuser
+    
+    - name: Run integration tests
+      run: |
+        docker-compose exec -T spark-consumer python -c "
+        import psycopg2
+        conn = psycopg2.connect('postgresql://stockuser:stockpass@postgres:5432/stockdb')
+        cur = conn.cursor()
+        cur.execute('SELECT COUNT(*) FROM fact_stock_prices')
+        print(f'Records in fact table: {cur.fetchone()[0]}')
+        cur.close()
+        conn.close()
+        "
+    
+    - name: Stop services
+      if: always()
+      run: docker-compose down -v
+
+  # Security scanning
+  security-scan:
+    runs-on: ubuntu-latest
+    needs: docker-build
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        scan-ref: '.'
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+    
+    - name: Upload Trivy results to GitHub Security
+      uses: github/codeql-action/upload-sarif@v2
+      with:
+        sarif_file: 'trivy-results.sarif'
+    
+    - name: Run Docker Scout
+      uses: docker/scout-action@v1
+      with:
+        command: quickview,cves
+        only-severities: critical,high
